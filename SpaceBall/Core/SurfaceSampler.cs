@@ -31,7 +31,8 @@ namespace SpaceDNA.Core
 
         private float[,]? _heightmapCurrent;
         private float[,]? _heightmapNext;
-        private int _size;
+        private int _width;
+        private int _height;
 
         public float PlanetRadius { get; private set; } = WorldConstants.EarthRadius;
         public float DisplacementScale { get; private set; } = 1f;
@@ -48,7 +49,8 @@ namespace SpaceDNA.Core
         {
             _heightmapCurrent = current;
             _heightmapNext = next;
-            _size = current.GetLength(0);
+            _width = current.GetLength(0);
+            _height = current.GetLength(1);
             BlendFactor = Math.Clamp(blendFactor, 0f, 1f);
         }
 
@@ -92,12 +94,64 @@ namespace SpaceDNA.Core
             float uvX = lon / twoPi;
             float uvY = 0.5f + MathF.Asin(Math.Clamp(normal.Y, -1f, 1f)) / MathF.PI;
 
-            int x = (int)(uvX * (_size - 1));
-            int y = (int)(uvY * (_size - 1));
-            x = Math.Clamp(x, 0, _size - 1);
-            y = Math.Clamp(y, 0, _size - 1);
+            return SampleTextureLinearUnpacked(map, uvX, uvY);
+        }
 
-            return map[x, y];
+        private float SampleTextureLinearUnpacked(float[,] map, float uvX, float uvY)
+        {
+            if (_width <= 0 || _height <= 0)
+                return 0f;
+
+            // Эквивалент texture() с GL_LINEAR + WrapS=Repeat + WrapT=ClampToEdge.
+            float x = uvX * _width - 0.5f;
+            float y = uvY * _height - 0.5f;
+
+            int x0 = FloorToInt(x);
+            int y0 = FloorToInt(y);
+            int x1 = x0 + 1;
+            int y1 = y0 + 1;
+
+            float tx = x - x0;
+            float ty = y - y0;
+
+            int sx0 = WrapRepeat(x0, _width);
+            int sx1 = WrapRepeat(x1, _width);
+            int sy0 = ClampEdge(y0, _height);
+            int sy1 = ClampEdge(y1, _height);
+
+            float c00 = UnpackHeight(map[sx0, sy0]);
+            float c10 = UnpackHeight(map[sx1, sy0]);
+            float c01 = UnpackHeight(map[sx0, sy1]);
+            float c11 = UnpackHeight(map[sx1, sy1]);
+
+            float cx0 = c00 + (c10 - c00) * tx;
+            float cx1 = c01 + (c11 - c01) * tx;
+            return cx0 + (cx1 - cx0) * ty;
+        }
+
+        private static int FloorToInt(float value) => (int)MathF.Floor(value);
+
+        private static int WrapRepeat(int value, int size)
+        {
+            int result = value % size;
+            return result < 0 ? result + size : result;
+        }
+
+        private static int ClampEdge(int value, int size)
+        {
+            if (value < 0) return 0;
+            if (value >= size) return size - 1;
+            return value;
+        }
+
+        private static float UnpackHeight(float rawHeight)
+        {
+            // Эквивалент пути CPU->R8 texture->shader:
+            // byte = (raw*0.5+0.5)*255, texture.r in [0..1], shader: r*2-1.
+            float clamped = Math.Clamp(rawHeight, -1f, 1f);
+            byte encoded = (byte)((clamped * 0.5f + 0.5f) * 255f);
+            float texelR = encoded / 255f;
+            return texelR * 2f - 1f;
         }
 
         private float EstimateSlope(Vector3 normal, float baseHeightWorld)

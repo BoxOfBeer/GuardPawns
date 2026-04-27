@@ -525,6 +525,30 @@ namespace SpaceDNA.Core
             }
             return invalid;
         }
+
+        public (float maxAbsDiff, float avgAbsDiff, int samples) MeasureRenderedRadiusDifference()
+        {
+            int samples = 0;
+            float sum = 0f;
+            float max = 0f;
+
+            foreach (var pawn in _pawns)
+            {
+                if (!pawn.IsAlive) continue;
+
+                Vector3 normal = pawn.Position.LengthSquared > 0.000001f ? Vector3.Normalize(pawn.Position) : Vector3.UnitY;
+                float cpuRadius = SampleSurface(normal).Radius;
+                float renderedRadius = PlanetRadius + _surfaceSampler.SampleHeightWorld(normal);
+                float diff = MathF.Abs(cpuRadius - renderedRadius);
+
+                sum += diff;
+                if (diff > max) max = diff;
+                samples++;
+            }
+
+            float avg = samples > 0 ? sum / samples : 0f;
+            return (max, avg, samples);
+        }
         
         /// <summary>
         /// Get agent statistics string.

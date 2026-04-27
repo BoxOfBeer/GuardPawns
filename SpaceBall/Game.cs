@@ -949,6 +949,8 @@ void main(){
         {
             _pawnSurfaceAuditTimer = 0f;
             int invalid = _pawnAgent.ValidateSurfaceAnchoring();
+            var (maxAbsDiff, avgAbsDiff, samples) = _pawnAgent.MeasureRenderedRadiusDifference();
+            GameLog.Log($"[Pawns] CPU↔GPU radius diff: max={maxAbsDiff:F6}, avg={avgAbsDiff:F6}, samples={samples}");
             if (invalid > 0)
                 GameLog.Log($"[Pawns] Surface anchoring warning: invalid={invalid}/{_pawnAgent.AliveCount}");
         }
