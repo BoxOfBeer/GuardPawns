@@ -76,6 +76,12 @@ namespace SpaceDNA.Core
         /// <summary>Direction change interval (seconds)</summary>
         public const float MinDirectionChangeTime = 2f;
         public const float MaxDirectionChangeTime = 7f;
+
+        /// <summary>Pawn offset above terrain, relative to planet radius.</summary>
+        public const float PawnSurfaceOffsetFactor = 0.03f;
+
+        /// <summary>Minimum pawn offset above terrain in world units.</summary>
+        public const float MinPawnSurfaceOffset = 0.02f;
         
         #endregion
         
