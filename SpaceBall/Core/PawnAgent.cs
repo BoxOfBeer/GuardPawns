@@ -43,9 +43,8 @@ namespace SpaceDNA.Core
         public float EffectiveSpeed { get; private set; }
         public float EnergyCostMultiplier { get; private set; }
         
-        // Heightmap data
-        private float[,]? _heightmap;
-        private int _heightmapSize;
+        // Heightmap/surface sampler data
+        private readonly SurfaceSampler _surfaceSampler = new SurfaceSampler();
         
         // Pawn population
         private List<Pawn> _pawns = new List<Pawn>();
@@ -103,6 +102,7 @@ namespace SpaceDNA.Core
             GravityFactor = WorldConstants.CalculateGravityFactor(radius, density);
             EnergyCostMultiplier = WorldConstants.GravityEnergyMultiplier(GravityFactor);
             EffectiveSpeed = WorldConstants.GravitySpeedMultiplier(GravityFactor);
+            _surfaceSampler.SetPlanet(radius, _surfaceSampler.DisplacementScale);
         }
         
         /// <summary>
@@ -110,12 +110,14 @@ namespace SpaceDNA.Core
         /// </summary>
         public void SetHeightmap(float[,] heightmap, float displacementScale)
         {
-            _heightmap = heightmap;
-            _heightmapSize = heightmap.GetLength(0);
-            _displacementScale = displacementScale;
+            SetSurfaceState(heightmap, null, blendFactor: 0f, displacementScale);
         }
-        
-        private float _displacementScale = 1f;
+
+        public void SetSurfaceState(float[,] currentHeightmap, float[,]? nextHeightmap, float blendFactor, float displacementScale)
+        {
+            _surfaceSampler.SetPlanet(PlanetRadius, displacementScale);
+            _surfaceSampler.SetHeightmaps(currentHeightmap, nextHeightmap, blendFactor);
+        }
         
         /// <summary>
         /// Initialize pawn population.
@@ -162,7 +164,7 @@ namespace SpaceDNA.Core
                     MathF.Sin(phi) * MathF.Sin(theta),
                     MathF.Cos(phi)
                 );
-                if (_heightmap == null) break;
+                if (!_surfaceSampler.HasData) break;
                 float h = GetHeightAtPosition(pos);
                 if (h >= 0f || genome.WaterAffinity >= waterTraverseThreshold) break;
             }
@@ -299,23 +301,15 @@ namespace SpaceDNA.Core
         /// </summary>
         private float GetHeightAtPosition(Vector3 position)
         {
-            if (_heightmap == null) return 0f;
+            return _surfaceSampler.SampleHeightWorld(position);
+        }
 
-            // Pawn.Position может слегка "поплыть" и перестать быть единичным вектором.
-            // Нормализуем, иначе мир-позиция будет внутри планеты.
-            if (position.LengthSquared > 0.000001f)
-                position = Vector3.Normalize(position);
-            
-            // Convert 3D position to UV (u,v как у сферы; текстура: y=0=юг, y=size-1=север)
-            float u = 0.5f + MathF.Atan2(position.Z, position.X) / (2 * MathF.PI);
-            float v = 0.5f - MathF.Asin(Math.Clamp(position.Y, -1f, 1f)) / MathF.PI;
-            int x = (int)(u * (_heightmapSize - 1));
-            int y = (int)((1.0 - v) * (_heightmapSize - 1));
-            
-            x = Math.Clamp(x, 0, _heightmapSize - 1);
-            y = Math.Clamp(y, 0, _heightmapSize - 1);
-            
-            return _heightmap[x, y] * _displacementScale;
+        private float GetPawnSurfaceOffset(Pawn pawn)
+        {
+            float baseOffset = MathF.Max(WorldConstants.MinPawnSurfaceOffset, PlanetRadius * WorldConstants.PawnSurfaceOffsetFactor);
+            float visualOffset = WorldConstants.PawnVisualSurfaceOffset * PlanetRadius;
+            float modelOffset = WorldConstants.PawnModelBaseOffset * pawn.Genome.Size;
+            return baseOffset + visualOffset + modelOffset;
         }
 
         private float EstimateSlope(Vector3 normal, float baseHeight)
@@ -390,7 +384,7 @@ namespace SpaceDNA.Core
         private void ApplyTerrainForaging(Pawn pawn, float heightWorld, float deltaTime)
         {
             if (!pawn.IsAlive || deltaTime <= 0f) return;
-            float normH = _displacementScale > 0.0001f ? heightWorld / _displacementScale : 0f;
+            float normH = _surfaceSampler.DisplacementScale > 0.0001f ? heightWorld / _surfaceSampler.DisplacementScale : 0f;
             float forage = 0f;
             if (normH < 0f && pawn.Genome.WaterAffinity >= 0.55f)
                 forage = WorldConstants.WaterForageEnergyRate * deltaTime;

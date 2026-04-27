@@ -330,7 +330,7 @@ public partial class Game : GameWindow
                 {
                     SaveHeightmapToDataPng(_currentHeightmap, "current.png");
                     SaveHeightmapToDataPng(_currentHeightmap, "future.png");
-                    _pawnAgent?.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+                    _pawnAgent?.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
                 }
             }
         }
@@ -899,7 +899,7 @@ void main(){
 
         if (_currentHeightmap != null)
         {
-            _pawnAgent.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+            _pawnAgent.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
         }
         float effT = WorldConstants.GetEffectiveTemperature(_config.Temperature, _config.GeologicActivity);
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
@@ -937,7 +937,7 @@ void main(){
         if (_pawnAgent == null || !_pawnsInitialized) return;
         if (_currentHeightmap != null)
         {
-            _pawnAgent.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+            _pawnAgent.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
         }
         float effT = WorldConstants.GetEffectiveTemperature(_config.Temperature, _config.GeologicActivity);
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
