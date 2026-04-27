@@ -65,6 +65,8 @@ namespace SpaceDNA.Core
         
         // Random for world events
         private Random _rnd = new Random();
+        private const float PawnVisualSurfaceOffsetFactor = 0.008f;
+        private const float PawnModelBaseOffset = 0.05f;
 
         // Species-level DNA (optional). If set, new pawns spawn near this genome with small mutations.
         private DnaSequence? _speciesDna;
