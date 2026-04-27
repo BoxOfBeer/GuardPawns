@@ -1,0 +1,36 @@
+{
+  "temperature_low": "Ледяной мир",
+  "temperature_low_desc": "Сегодня -212°C, прохладненько",
+  "temperature_mid": "Умеренный климат",
+  "temperature_mid_desc": "Комфортная температура",
+  "temperature_high": "Раскалённый мир",
+  "temperature_high_desc": "Сегодня +45°C, идеально для прогулок",
+  
+  "atmosphere_low": "Разрежённая атмосфера",
+  "atmosphere_low_desc": "Почти вакуум",
+  "atmosphere_mid": "Нормальная атмосфера",
+  "atmosphere_mid_desc": "Обычное давление",
+  "atmosphere_high": "Плотная атмосфера",
+  "atmosphere_high_desc": "Давление как на Венере",
+  
+  "geology_low": "Спящий мир",
+  "geology_low_desc": "Нет вулканов",
+  "geology_mid": "Активная геология",
+  "geology_mid_desc": "Есть вулканы",
+  "geology_high": "Вулканический ад",
+  "geology_high_desc": "Лава повсюду",
+  
+  "noise_low": "Гладкий рельеф",
+  "noise_low_desc": "Равнины",
+  "noise_mid": "Обычный рельеф",
+  "noise_mid_desc": "Горы и долины",
+  "noise_high": "Хаотичный рельеф",
+  "noise_high_desc": "Бесконечные горы",
+  
+  "seed_desc": "Уникальный идентификатор",
+  "octaves_desc": "Детализация шума",
+  "density_desc": "Плотность планеты",
+  "radius_desc": "Размер планеты",
+  "displacement_desc": "Высота гор",
+  "segments_desc": "Качество модели"
+}

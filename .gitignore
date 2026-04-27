@@ -1,0 +1,34 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+**/[Bb]in/
+**/[Oo]bj/
+
+# Visual Studio / IDE files
+.vs/
+**/.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local publish/archive folders
+release/
+backup/
+
+# Logs and local runtime state
+*.log
+imgui.ini
+123.txt
+/planet_config.json
+
+# Rider / ReSharper
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+

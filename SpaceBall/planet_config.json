@@ -1,0 +1,13 @@
+{
+  "seed": 12345,
+  "geologicActivity": 0.4,
+  "noiseOctaves": 4,
+  "noiseFrequency": 0.1,
+  "temperature": 0.5,
+  "atmosphere": 0.5,
+  "density": 1.0,
+  "radius": 5.0,
+  "displacementScale": 0.3,
+  "segments": 256,
+  "starCount": 500
+}

@@ -1,0 +1,17 @@
+{
+  "seed": 672,
+  "geologicActivity": 1.3121265,
+  "noiseOctaves": 7,
+  "noiseFrequency": 1.434,
+  "temperature": 0.7768779,
+  "atmosphere": 0.93123186,
+  "density": 0.88149637,
+  "radius": 11.474873,
+  "displacementScale": 0.69279146,
+  "segments": 978,
+  "starCount": 500,
+  "volume": 0.3,
+  "mutationSpeed": 30,
+  "autoMutationInterval": 0,
+  "mutationFields": 3
+}

@@ -1,0 +1,507 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using OpenTK.Mathematics;
+
+namespace SpaceDNA.Core
+{
+    /// <summary>
+    /// Agent - global world controller that manages pawn needs and world state.
+    /// Controls: hunger, thirst, temperature stress, food spawning, population balance.
+    /// </summary>
+    public class PawnAgent
+    {
+        // World parameters (from planet config)
+        public float PlanetRadius { get; private set; }
+        public float PlanetDensity { get; private set; }
+        public float PlanetTemperature { get; private set; }
+        public float PlanetAtmosphere { get; private set; }
+        public float PlanetGeologicActivity { get; private set; }
+        
+        // Derived world constants
+        public float GravityFactor { get; private set; }
+        public float EffectiveSpeed { get; private set; }
+        public float EnergyCostMultiplier { get; private set; }
+        
+        // Heightmap data
+        private float[,]? _heightmap;
+        private int _heightmapSize;
+        
+        // Pawn population
+        private List<Pawn> _pawns = new List<Pawn>();
+        public IReadOnlyList<Pawn> Pawns => _pawns;
+        public int AliveCount => _pawns.FindAll(p => p.IsAlive).Count;
+        public int DeadCount => _pawns.FindAll(p => !p.IsAlive).Count;
+        public int TotalCount => _pawns.Count;
+        
+        // Food items (simple food sources on planet surface)
+        private List<FoodItem> _foodItems = new List<FoodItem>();
+        public IReadOnlyList<FoodItem> FoodItems => _foodItems;
+        
+        // Statistics
+        public int TotalBirths { get; private set; } = 0;
+        public int TotalDeaths { get; private set; } = 0;
+        public float WorldTime { get; private set; } = 0f;
+        public float AverageFitness { get; private set; } = 0f;
+        
+        // Random for world events
+        private Random _rnd = new Random();
+
+        // Species-level DNA (optional). If set, new pawns spawn near this genome with small mutations.
+        private DnaSequence? _speciesDna;
+
+        public void SetSpeciesDna(DnaSequence? dna)
+        {
+            _speciesDna = dna;
+        }
+        
+        public PawnAgent()
+        {
+            // Default to Earth-like conditions
+            SetPlanetParameters(
+                radius: WorldConstants.EarthRadius,
+                density: 1f,
+                temperature: 0.5f,
+                atmosphere: 1f,
+                geologicActivity: 1f
+            );
+        }
+        
+        /// <summary>
+        /// Set planet parameters and recalculate derived constants.
+        /// </summary>
+        public void SetPlanetParameters(float radius, float density, float temperature, 
+            float atmosphere, float geologicActivity)
+        {
+            PlanetRadius = radius;
+            PlanetDensity = density;
+            PlanetTemperature = temperature;
+            PlanetAtmosphere = atmosphere;
+            PlanetGeologicActivity = geologicActivity;
+            
+            // Calculate derived constants
+            GravityFactor = WorldConstants.CalculateGravityFactor(radius, density);
+            EnergyCostMultiplier = WorldConstants.GravityEnergyMultiplier(GravityFactor);
+            EffectiveSpeed = WorldConstants.GravitySpeedMultiplier(GravityFactor);
+        }
+        
+        /// <summary>
+        /// Set heightmap data for terrain queries.
+        /// </summary>
+        public void SetHeightmap(float[,] heightmap, float displacementScale)
+        {
+            _heightmap = heightmap;
+            _heightmapSize = heightmap.GetLength(0);
+            _displacementScale = displacementScale;
+        }
+        
+        private float _displacementScale = 1f;
+        
+        /// <summary>
+        /// Initialize pawn population.
+        /// </summary>
+        public void InitializePopulation(int count)
+        {
+            _pawns.Clear();
+            _foodItems.Clear();
+            TotalBirths = 0;
+            TotalDeaths = 0;
+            WorldTime = 0f;
+            
+            for (int i = 0; i < count; i++)
+            {
+                var pawn = CreateRandomPawn();
+                _pawns.Add(pawn);
+                TotalBirths++;
+            }
+            
+            Console.WriteLine($"[PawnAgent] Initialized {count} pawns");
+        }
+        
+        /// <summary>
+        /// Create a pawn at random position with random genome.
+        /// Uses DNA layer: random sequence -> mutate (evolution) -> express to phenotype.
+        /// </summary>
+        private Pawn CreateRandomPawn()
+        {
+            // DNA layer: random sequence, small mutation, then express to PawnGenome
+            var dna = _speciesDna != null
+                ? _speciesDna.Mutate(0.15f, _rnd)
+                : DnaSequence.Random(segmentCount: 12 + _rnd.Next(9), rnd: _rnd).Mutate(0.2f, _rnd);
+            PawnGenome genome = dna.IsViable ? dna.Express(_rnd.Next()) : new PawnGenome().Mutate(0.2f);
+
+            // Random position on sphere (avoid water for non-swimmers)
+            Vector3 pos = Vector3.UnitZ;
+            const float waterTraverseThreshold = 0.55f;
+            for (int attempt = 0; attempt < 12; attempt++)
+            {
+                float theta = (float)(_rnd.NextDouble() * Math.PI * 2);
+                float phi = (float)Math.Acos(2 * _rnd.NextDouble() - 1);
+                pos = new Vector3(
+                    MathF.Sin(phi) * MathF.Cos(theta),
+                    MathF.Sin(phi) * MathF.Sin(theta),
+                    MathF.Cos(phi)
+                );
+                if (_heightmap == null) break;
+                float h = GetHeightAtPosition(pos);
+                if (h >= 0f || genome.WaterAffinity >= waterTraverseThreshold) break;
+            }
+
+            return new Pawn(pos, genome);
+        }
+        
+        /// <summary>
+        /// Main update loop - called each frame.
+        /// </summary>
+        public void Update(float deltaTime)
+        {
+            WorldTime += deltaTime;
+            
+            // Update all pawns
+            UpdatePawns(deltaTime);
+            
+            // Spawn food
+            UpdateFoodSpawning(deltaTime);
+            
+            // Handle reproduction
+            UpdateReproduction();
+            
+            // Clean up dead pawns periodically
+            if (_pawns.Count > WorldConstants.MaxPopulation)
+            {
+                CleanupDeadPawns();
+            }
+            
+            // Calculate statistics
+            CalculateStatistics();
+        }
+        
+        /// <summary>
+        /// Update all pawns with environment data.
+        /// </summary>
+        private void UpdatePawns(float deltaTime)
+        {
+            foreach (var pawn in _pawns)
+            {
+                if (!pawn.IsAlive) continue;
+                
+                // Высота рельефа из шума в текущей позиции (для движения и проверок)
+                float height = GetHeightAtPosition(pawn.Position);
+                float localTemp = CalculateLocalTemperature(height);
+
+                Vector3 prevPos = pawn.Position;
+
+                // Update pawn physics (height = текущая высота рельефа под пешкой)
+                pawn.Update(deltaTime, height, localTemp, GravityFactor,
+                    PlanetAtmosphere, PlanetGeologicActivity);
+
+                // Проверка по высоте шума: не уходить «под землю» (в воду без плавания), не взбираться на кручу без полёта
+                if (_heightmap != null)
+                {
+                    float newH = GetTerrainHeightAt(pawn.Position);
+                    bool revert = false;
+                    if (!CanPawnEnterTerrainAt(pawn, newH))
+                        revert = true;
+                    float heightChange = MathF.Abs(newH - height);
+                    const float maxSlopePerStep = 0.14f;
+                    if (!pawn.Genome.CanFly && heightChange > maxSlopePerStep)
+                        revert = true;
+                    if (revert)
+                        pawn.SetPosition(prevPos);
+                }
+                
+                // Check for food collision
+                CheckFoodCollision(pawn);
+                
+                // Passive foraging: water and grass (low/zero height) give energy
+                ApplyTerrainForaging(pawn, height, deltaTime);
+                
+                // Track deaths
+                if (!pawn.IsAlive)
+                {
+                    TotalDeaths++;
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Calculate local temperature based on height.
+        /// </summary>
+        private float CalculateLocalTemperature(float height)
+        {
+            // Base temperature from planet
+            float temp = PlanetTemperature;
+            
+            // Higher elevations are colder (lapse rate)
+            if (height > 0)
+            {
+                temp -= height * 0.1f;
+            }
+            
+            // Geologic heat
+            temp += WorldConstants.VolcanicHeatBonus(PlanetGeologicActivity, height);
+            
+            return Math.Clamp(temp, 0f, 1f);
+        }
+        
+        /// <summary>
+        /// Высота рельефа (из шума) в мировой системе в заданном направлении (нормализованном).
+        /// Используется для позиции пешек, проверки воды/суши и полёта.
+        /// </summary>
+        public float GetTerrainHeightAt(Vector3 unitDirection)
+        {
+            return GetHeightAtPosition(Vector3.Normalize(unitDirection));
+        }
+        
+        /// <summary>
+        /// Может ли пешка находиться на данной высоте рельефа: суша (height >= 0), вода при умении плавать, или полёт.
+        /// </summary>
+        public bool CanPawnEnterTerrainAt(Pawn pawn, float terrainHeight)
+        {
+            if (terrainHeight >= 0f) return true;
+            if (pawn.Genome.WaterAffinity >= 0.55f) return true;
+            if (pawn.Genome.CanFly) return true;
+            return false;
+        }
+        
+        /// <summary>
+        /// Get height at position from heightmap.
+        /// </summary>
+        private float GetHeightAtPosition(Vector3 position)
+        {
+            if (_heightmap == null) return 0f;
+
+            // Pawn.Position может слегка "поплыть" и перестать быть единичным вектором.
+            // Нормализуем, иначе мир-позиция будет внутри планеты.
+            if (position.LengthSquared > 0.000001f)
+                position = Vector3.Normalize(position);
+            
+            // Convert 3D position to UV (u,v как у сферы; текстура: y=0=юг, y=size-1=север)
+            float u = 0.5f + MathF.Atan2(position.Z, position.X) / (2 * MathF.PI);
+            float v = 0.5f - MathF.Asin(Math.Clamp(position.Y, -1f, 1f)) / MathF.PI;
+            int x = (int)(u * (_heightmapSize - 1));
+            int y = (int)((1.0 - v) * (_heightmapSize - 1));
+            
+            x = Math.Clamp(x, 0, _heightmapSize - 1);
+            y = Math.Clamp(y, 0, _heightmapSize - 1);
+            
+            return _heightmap[x, y] * _displacementScale;
+        }
+        
+        /// <summary>
+        /// Spawn food over time.
+        /// </summary>
+        private void UpdateFoodSpawning(float deltaTime)
+        {
+            // Age food so it can expire
+            foreach (var f in _foodItems)
+            {
+                f.Update(deltaTime);
+            }
+            
+            // Spawn food at constant rate
+            if (_foodItems.Count < WorldConstants.MaxFoodItems)
+            {
+                if (_rnd.NextDouble() < WorldConstants.FoodSpawnRate * deltaTime)
+                {
+                    SpawnFood();
+                }
+            }
+            
+            // Remove expired food
+            _foodItems.RemoveAll(f => f.IsExpired);
+        }
+        
+        /// <summary>
+        /// Spawn a food item at random position.
+        /// </summary>
+        private void SpawnFood()
+        {
+            float theta = (float)(_rnd.NextDouble() * Math.PI * 2);
+            float phi = (float)Math.Acos(2 * _rnd.NextDouble() - 1);
+            
+            Vector3 pos = new Vector3(
+                MathF.Sin(phi) * MathF.Cos(theta),
+                MathF.Sin(phi) * MathF.Sin(theta),
+                MathF.Cos(phi)
+            );
+            
+            _foodItems.Add(new FoodItem(pos, lifetime: 30f));
+        }
+        
+        /// <summary>
+        /// Passive foraging: standing on water (for swimmers) or grass/low land restores energy.
+        /// </summary>
+        private void ApplyTerrainForaging(Pawn pawn, float heightWorld, float deltaTime)
+        {
+            if (!pawn.IsAlive || deltaTime <= 0f) return;
+            float normH = _displacementScale > 0.0001f ? heightWorld / _displacementScale : 0f;
+            float forage = 0f;
+            if (normH < 0f && pawn.Genome.WaterAffinity >= 0.55f)
+                forage = WorldConstants.WaterForageEnergyRate * deltaTime;
+            else if (normH >= 0f && normH <= 0.35f)
+                forage = WorldConstants.GrassForageEnergyRate * deltaTime;
+            if (forage > 0f)
+                pawn.Feed(Math.Min(1f, forage / WorldConstants.FoodEnergyGain));
+        }
+
+        /// <summary>
+        /// Check if pawn collides with food.
+        /// </summary>
+        private void CheckFoodCollision(Pawn pawn)
+        {
+            for (int i = _foodItems.Count - 1; i >= 0; i--)
+            {
+                var food = _foodItems[i];
+                
+                // Simple distance check
+                float dist = (pawn.Position - food.Position).LengthSquared;
+                float collisionDist = 0.01f; // Collision threshold
+                
+                if (dist < collisionDist)
+                {
+                    pawn.Feed(food.Value);
+                    _foodItems.RemoveAt(i);
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Handle reproduction for eligible pawns.
+        /// </summary>
+        private void UpdateReproduction()
+        {
+            if (_pawns.Count >= WorldConstants.MaxPopulation) return;
+            
+            var eligible = _pawns.FindAll(p => p.CanReproduce());
+            
+            foreach (var pawn in eligible)
+            {
+                // Small chance to reproduce each frame
+                if (_rnd.NextDouble() < 0.001)
+                {
+                    // Find nearby partner for sexual reproduction
+                    Pawn? partner = FindNearbyPawn(pawn, 0.1f);
+                    
+                    var child = pawn.Reproduce(partner);
+                    if (child != null)
+                    {
+                        _pawns.Add(child);
+                        TotalBirths++;
+                    }
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Find nearby pawn for reproduction.
+        /// </summary>
+        private Pawn? FindNearbyPawn(Pawn source, float maxDistance)
+        {
+            foreach (var pawn in _pawns)
+            {
+                if (pawn == source || !pawn.IsAlive) continue;
+                
+                float dist = (pawn.Position - source.Position).LengthSquared;
+                if (dist < maxDistance * maxDistance && pawn.CanReproduce())
+                {
+                    return pawn;
+                }
+            }
+            return null;
+        }
+        
+        /// <summary>
+        /// Remove dead pawns from list.
+        /// </summary>
+        private void CleanupDeadPawns()
+        {
+            _pawns.RemoveAll(p => !p.IsAlive);
+        }
+        
+        /// <summary>
+        /// Calculate population statistics.
+        /// </summary>
+        private void CalculateStatistics()
+        {
+            if (_pawns.Count == 0)
+            {
+                AverageFitness = 0f;
+                return;
+            }
+            
+            float totalFitness = 0f;
+            int alive = 0;
+            
+            foreach (var pawn in _pawns)
+            {
+                if (pawn.IsAlive)
+                {
+                    totalFitness += pawn.Genome.CalculateFitness(
+                        PlanetTemperature, PlanetAtmosphere, GravityFactor);
+                    alive++;
+                }
+            }
+            
+            AverageFitness = alive > 0 ? totalFitness / alive : 0f;
+        }
+        
+        /// <summary>
+        /// Get world position for rendering: on the displaced surface, slightly outward so pawns are never inside the mesh.
+        /// </summary>
+        public Vector3 GetWorldPosition(Pawn pawn)
+        {
+            Vector3 dir = pawn.Position;
+            if (dir.LengthSquared > 0.000001f)
+                dir = Vector3.Normalize(dir);
+            float height = GetHeightAtPosition(dir);
+            float outward = PlanetRadius * 0.22f + _displacementScale * 0.5f;
+            float surfaceRadius = PlanetRadius + height + outward;
+            return dir * surfaceRadius;
+        }
+        
+        /// <summary>
+        /// Get agent statistics string.
+        /// </summary>
+        public string GetStatsString()
+        {
+            string dnaSample = "";
+            var first = _pawns.FirstOrDefault(p => p.IsAlive);
+            if (first != null && DnaInterpreter.LooksLikeRawDna(first.Genome.DNA))
+            {
+                string raw = first.Genome.DNA;
+                dnaSample = raw.Length > 40 ? raw.Substring(0, 37) + "..." : raw;
+            }
+            string baseLine = $"Pawns: {AliveCount}/{WorldConstants.MaxPopulation} | " +
+                   $"Fitness: {AverageFitness:F2} | " +
+                   $"Births: {TotalBirths} | Deaths: {TotalDeaths} | " +
+                   $"Food: {_foodItems.Count} | Time: {WorldTime:F1}s";
+            return string.IsNullOrEmpty(dnaSample) ? baseLine : $"{baseLine}\nDNA: {dnaSample}";
+        }
+    }
+    
+    /// <summary>
+    /// Simple food item on planet surface.
+    /// </summary>
+    public class FoodItem
+    {
+        public Vector3 Position { get; private set; }
+        public float Value { get; private set; }
+        public float Lifetime { get; private set; }
+        public float Age { get; private set; }
+        public bool IsExpired => Age >= Lifetime;
+        
+        public FoodItem(Vector3 position, float value = 1f, float lifetime = 60f)
+        {
+            Position = Vector3.Normalize(position);
+            Value = value;
+            Lifetime = lifetime;
+            Age = 0f;
+        }
+        
+        public void Update(float deltaTime)
+        {
+            Age += deltaTime;
+        }
+    }
+}
