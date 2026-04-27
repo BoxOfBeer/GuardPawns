@@ -73,8 +73,8 @@ public partial class Game : GameWindow
     private readonly Localization _loc = new Localization();
     private Language _language = Language.Ru;
 
-    // Creature layer: species DNA editing
-    private string _speciesDnaText = DnaSequence.DefaultSequence();
+    // Creature layer (milestone): только количество и рендер пешек, без DNA.
+    private string _speciesDnaText = string.Empty;
     private int _pawnInitialCount = 20;
     private SpeciesBlueprint? _speciesBlueprint;
     
@@ -905,25 +905,10 @@ void main(){
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
         _pawnAgent.SetPlanetParameters(_config.Radius, _config.Density, effT, effA, _config.GeologicActivity);
 
-        // Species baseline: если пользователь задал ДНК — используем её как мастер, иначе строим blueprint от планеты.
-        var rnd = new Random(_config.Seed);
-        DnaSequence? userSeq = null;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(_speciesDnaText))
-            {
-                var seq = new DnaSequence(_speciesDnaText);
-                if (seq.IsViable) userSeq = seq;
-            }
-        }
-        catch
-        {
-            userSeq = null;
-        }
-
-        _speciesBlueprint = SpeciesBlueprint.ForPlanet(_config, rnd, userSeq);
-        _speciesDnaText = _speciesBlueprint.MasterSequence.Raw;
-        _pawnAgent.SetSpeciesDna(_speciesBlueprint.MasterSequence);
+        // Milestone 1: без DNA-логики и автомутаций.
+        _speciesBlueprint = null;
+        _speciesDnaText = string.Empty;
+        _pawnAgent.SetSpeciesDna(null);
 
         _pawnAgent.InitializePopulation(_pawnInitialCount);
         _pawnsInitialized = true;
@@ -1286,20 +1271,8 @@ void main(){
         // Async generation + smooth heightmap blend
         PumpPendingGeneration(dt);
 
-        // Auto-mutation
-        if (_config.AutoMutationInterval > 0.01f)
-        {
-            _autoMutationTimer += dt;
-            if (_autoMutationTimer >= _config.AutoMutationInterval)
-            {
-                _autoMutationTimer = 0f;
-                ApplyPlanetMutation();
-            }
-        }
-        else
-        {
-            _autoMutationTimer = 0f;
-        }
+        // Milestone 1: автомутация отключена до стабилизации привязки пешек к поверхности.
+        _autoMutationTimer = 0f;
 
         // Audio
         if (_audio != null)
@@ -1455,67 +1428,9 @@ void main(){
                         if (ImGui.Checkbox(_loc.T("Pawns3D"), ref use3d)) _use3DPawns = use3d;
                         int pc = _pawnInitialCount;
                         if (ImGui.SliderInt(_loc.T("Pawns"), ref pc, 1, 200)) { _pawnInitialCount = pc; }
-
                         ImGui.Separator();
-                        ImGui.TextUnformatted(_loc.T("SpeciesDNA"));
-                        ImGui.InputText("##speciesdna", ref _speciesDnaText, 1024);
-
-                        if (ImGui.Button(_loc.T("RandomizeDNA"))) _speciesDnaText = DnaSequence.Random(10).Raw;
-                ImGui.SameLine();
-                        if (ImGui.Button(_loc.T("MutateDNA")))
-                        {
-                            try { _speciesDnaText = new DnaSequence(_speciesDnaText).Mutate(0.35f).Raw; } catch { }
-                        }
-
-                        if (ImGui.Button(_loc.T("ApplyDNA"))) InitializeAgents(forceReset: true);
-
-                        // Preview: schematic appearance from DNA + traits
-                        ImGui.Spacing();
-                        ImGui.TextUnformatted(_loc.T("CreatureAppearance"));
-                        var previewMinC = ImGui.GetCursorScreenPos();
-                        float previewW = 220f;
-                        float previewH = 200f;
-                        ImGui.Dummy(new System.Numerics.Vector2(previewW, previewH));
-                        var drawListC = ImGui.GetWindowDrawList();
-                        PawnGenome? previewGenome = null;
-                        if (_pawnAgent != null)
-                        {
-                            foreach (var p in _pawnAgent.Pawns)
-                            {
-                                if (p.IsAlive) { previewGenome = p.Genome; break; }
-                            }
-                        }
-                        if (previewGenome == null && !string.IsNullOrWhiteSpace(_speciesDnaText))
-                        {
-                            try
-                            {
-                                var seq = new DnaSequence(_speciesDnaText);
-                                if (seq.IsViable) previewGenome = seq.Express(0);
-                            }
-                            catch { }
-                        }
-                        if (previewGenome == null) previewGenome = new PawnGenome();
-                        var activeSegmentsC = DnaInterpreter.ParseActiveSegments(_speciesDnaText);
-                        BaseTrait traitsC = _speciesBlueprint?.Traits ?? BaseTrait.None;
-                        DrawCreatureSchematic(drawListC, previewMinC, previewW, previewH, previewGenome, activeSegmentsC, traitsC);
-
-                        if (_speciesBlueprint != null)
-                        {
-                ImGui.Separator();
-                            ImGui.Text(_loc.T("TraitsHeader"));
-                            foreach (var line in _speciesBlueprint.GetSummaryLines())
-                            {
-                                string display = line;
-                                var t = line.TrimStart();
-                                if (t.StartsWith("[+]") || t.StartsWith("[~]") || t.StartsWith("[X]"))
-                                {
-                                    string mark = t.Substring(0, 3);
-                                    string trait = t.Length > 3 ? t.Substring(3).Trim() : "";
-                                    display = mark + " " + (string.IsNullOrEmpty(trait) ? trait : _loc.T(trait));
-                                }
-                                ImGui.TextUnformatted(display);
-                            }
-                        }
+                        ImGui.TextUnformatted("Milestone: DNA/мутации временно отключены");
+                        if (ImGui.Button("Пересоздать пешек")) InitializeAgents(forceReset: true);
 
                         if (_pawnAgent != null)
                         {
@@ -1526,7 +1441,6 @@ void main(){
                                 ImGui.Separator();
                                 ImGui.Text($"{_loc.T("Id")} {any.Id} {_loc.T("Gen")} {any.Generation} {_loc.T("Energy")} {any.EnergyPercent:P0}");
                                 ImGui.Text($"{_loc.T("Legs")} {any.Genome.LegCount} {_loc.T("Water")} {any.Genome.WaterAffinity:F2} {_loc.T("Size")} {any.Genome.Size:F2}");
-                                ImGui.TextUnformatted(any.Genome.DNA);
                             }
                         }
 
