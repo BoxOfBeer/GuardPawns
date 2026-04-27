@@ -949,10 +949,8 @@ void main(){
         {
             _pawnSurfaceAuditTimer = 0f;
             int invalid = _pawnAgent.ValidateSurfaceAnchoring();
-            var dbg = _pawnAgent.GetSurfaceDebugInfo();
-            GameLog.Log($"[PawnsSurface] invalid={invalid}/{_pawnAgent.AliveCount} below={dbg.BelowSurfaceCount}/{dbg.AliveCount} " +
-                        $"worldR={dbg.AverageWorldRadius:F3} surfaceR={dbg.AverageSurfaceRadius:F3} delta={dbg.AverageVisualDelta:F4} " +
-                        $"h={dbg.AverageHeight:F4} disp={dbg.DisplacementScale:F4} blend={dbg.BlendFactor:F3}");
+            if (invalid > 0)
+                GameLog.Log($"[Pawns] Surface anchoring warning: invalid={invalid}/{_pawnAgent.AliveCount}");
         }
     }
 
