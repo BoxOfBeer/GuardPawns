@@ -59,12 +59,14 @@ namespace SpaceDNA.Core
         public float TimeSurvived { get; private set; } = 0f;
         
         private static int _nextId = 1;
+        private readonly Random _rng;
         
-        public Pawn(Vector3 position, PawnGenome? genome = null, int generation = 1)
+        public Pawn(Vector3 position, PawnGenome? genome = null, int generation = 1, Random? random = null)
         {
             Id = _nextId++;
             Position = Vector3.Normalize(position);
             Genome = genome ?? new PawnGenome();
+            _rng = random ?? Random.Shared;
             Generation = generation;
             Energy = MaxEnergy * 0.8f; // Start with 80% energy
             
@@ -173,14 +175,13 @@ namespace SpaceDNA.Core
         /// </summary>
         private void SetRandomMovement()
         {
-            var rnd = new Random();
             _moveDirection = new Vector3(
-                (float)(rnd.NextDouble() * 2 - 1),
-                (float)(rnd.NextDouble() * 2 - 1),
-                (float)(rnd.NextDouble() * 2 - 1)
+                (float)(_rng.NextDouble() * 2 - 1),
+                (float)(_rng.NextDouble() * 2 - 1),
+                (float)(_rng.NextDouble() * 2 - 1)
             ).Normalized();
             _moveTimer = WorldConstants.MinDirectionChangeTime + 
-                (float)rnd.NextDouble() * (WorldConstants.MaxDirectionChangeTime - WorldConstants.MinDirectionChangeTime);
+                (float)_rng.NextDouble() * (WorldConstants.MaxDirectionChangeTime - WorldConstants.MinDirectionChangeTime);
         }
         
         /// <summary>
@@ -282,7 +283,7 @@ namespace SpaceDNA.Core
             ReproductionCooldown = WorldConstants.ReproductionCooldown;
             ChildrenCount++;
             
-            var rnd = new Random();
+            var rnd = _rng;
             
             // Create child genome: DNA-level crossover if both have raw sequence, else phenotype-level
             PawnGenome childGenome;
@@ -318,7 +319,7 @@ namespace SpaceDNA.Core
             );
             Vector3 childPos = Vector3.Normalize(Position + offset);
             
-            return new Pawn(childPos, childGenome, Generation + 1);
+            return new Pawn(childPos, childGenome, Generation + 1, _rng);
         }
         
         /// <summary>
