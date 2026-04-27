@@ -86,6 +86,7 @@ public partial class Game : GameWindow
     private bool _planetDiagnosticsLogged;
     private bool _pawnSkipReasonLogged;
     private bool _pawnDrawModeLogged;
+    private float _pawnSurfaceAuditTimer;
 
     public Game(GameWindowSettings g, NativeWindowSettings n) : base(g, n) { }
 
@@ -942,6 +943,15 @@ void main(){
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
         _pawnAgent.SetPlanetParameters(_config.Radius, _config.Density, effT, effA, _config.GeologicActivity);
         _pawnAgent.Update(dt);
+
+        _pawnSurfaceAuditTimer += dt;
+        if (_pawnSurfaceAuditTimer >= 2f)
+        {
+            _pawnSurfaceAuditTimer = 0f;
+            int invalid = _pawnAgent.ValidateSurfaceAnchoring();
+            if (invalid > 0)
+                GameLog.Log($"[Pawns] Surface anchoring warning: invalid={invalid}/{_pawnAgent.AliveCount}");
+        }
     }
 
     private void DrawAgents(Matrix4 model, Matrix4 view, Matrix4 projection)

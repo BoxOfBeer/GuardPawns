@@ -11,6 +11,26 @@ namespace SpaceDNA.Core
     /// </summary>
     public class PawnAgent
     {
+        public readonly struct SurfaceSample
+        {
+            public Vector3 Position { get; }
+            public Vector3 Normal { get; }
+            public float Radius { get; }
+            public float Height { get; }
+            public bool IsWater { get; }
+            public float Slope { get; }
+
+            public SurfaceSample(Vector3 position, Vector3 normal, float radius, float height, bool isWater, float slope)
+            {
+                Position = position;
+                Normal = normal;
+                Radius = radius;
+                Height = height;
+                IsWater = isWater;
+                Slope = slope;
+            }
+        }
+
         // World parameters (from planet config)
         public float PlanetRadius { get; private set; }
         public float PlanetDensity { get; private set; }
@@ -147,7 +167,7 @@ namespace SpaceDNA.Core
                 if (h >= 0f || genome.WaterAffinity >= waterTraverseThreshold) break;
             }
 
-            return new Pawn(pos, genome);
+            return new Pawn(pos, genome, random: _rnd);
         }
         
         /// <summary>
@@ -185,36 +205,29 @@ namespace SpaceDNA.Core
             {
                 if (!pawn.IsAlive) continue;
                 
-                // Высота рельефа из шума в текущей позиции (для движения и проверок)
-                float height = GetHeightAtPosition(pawn.Position);
-                float localTemp = CalculateLocalTemperature(height);
-
-                Vector3 prevPos = pawn.Position;
+                SurfaceSample prevSample = SampleSurface(pawn.Position);
+                float localTemp = CalculateLocalTemperature(prevSample.Height);
 
                 // Update pawn physics (height = текущая высота рельефа под пешкой)
-                pawn.Update(deltaTime, height, localTemp, GravityFactor,
+                pawn.Update(deltaTime, prevSample.Height, localTemp, GravityFactor,
                     PlanetAtmosphere, PlanetGeologicActivity);
 
-                // Проверка по высоте шума: не уходить «под землю» (в воду без плавания), не взбираться на кручу без полёта
-                if (_heightmap != null)
-                {
-                    float newH = GetTerrainHeightAt(pawn.Position);
-                    bool revert = false;
-                    if (!CanPawnEnterTerrainAt(pawn, newH))
-                        revert = true;
-                    float heightChange = MathF.Abs(newH - height);
-                    const float maxSlopePerStep = 0.14f;
-                    if (!pawn.Genome.CanFly && heightChange > maxSlopePerStep)
-                        revert = true;
-                    if (revert)
-                        pawn.SetPosition(prevPos);
-                }
+                SurfaceSample nextSample = SampleSurface(pawn.Position);
+                bool revert = false;
+                if (!CanPawnEnterTerrainAt(pawn, nextSample.Height))
+                    revert = true;
+                const float maxSurfaceSlope = 0.85f;
+                if (!pawn.Genome.CanFly && nextSample.Slope > maxSurfaceSlope)
+                    revert = true;
+
+                SurfaceSample activeSample = revert ? prevSample : nextSample;
+                pawn.SetPosition(activeSample.Normal);
                 
                 // Check for food collision
                 CheckFoodCollision(pawn);
                 
                 // Passive foraging: water and grass (low/zero height) give energy
-                ApplyTerrainForaging(pawn, height, deltaTime);
+                ApplyTerrainForaging(pawn, activeSample.Height, deltaTime);
                 
                 // Track deaths
                 if (!pawn.IsAlive)
@@ -250,7 +263,24 @@ namespace SpaceDNA.Core
         /// </summary>
         public float GetTerrainHeightAt(Vector3 unitDirection)
         {
-            return GetHeightAtPosition(Vector3.Normalize(unitDirection));
+            return SampleSurface(unitDirection).Height;
+        }
+
+        public float GetSurfaceRadius(Vector3 direction) => SampleSurface(direction).Radius;
+        public Vector3 GetSurfacePoint(Vector3 direction) => SampleSurface(direction).Position;
+
+        public SurfaceSample SampleSurface(Vector3 direction)
+        {
+            Vector3 normal = direction.LengthSquared > 0.000001f ? Vector3.Normalize(direction) : Vector3.UnitY;
+            float height = GetHeightAtPosition(normal);
+            float radius = PlanetRadius + height;
+            return new SurfaceSample(
+                position: normal * radius,
+                normal: normal,
+                radius: radius,
+                height: height,
+                isWater: height < 0f,
+                slope: EstimateSlope(normal, height));
         }
         
         /// <summary>
@@ -286,6 +316,31 @@ namespace SpaceDNA.Core
             y = Math.Clamp(y, 0, _heightmapSize - 1);
             
             return _heightmap[x, y] * _displacementScale;
+        }
+
+        private float EstimateSlope(Vector3 normal, float baseHeight)
+        {
+            if (_heightmap == null) return 0f;
+
+            BuildTangentBasis(normal, out var tangentA, out var tangentB);
+            const float eps = 0.015f;
+            float hA = GetHeightAtPosition(Vector3.Normalize(normal + tangentA * eps));
+            float hB = GetHeightAtPosition(Vector3.Normalize(normal + tangentB * eps));
+            float gradA = MathF.Abs(hA - baseHeight) / eps;
+            float gradB = MathF.Abs(hB - baseHeight) / eps;
+            return MathF.Min(1f, MathF.Sqrt(gradA * gradA + gradB * gradB));
+        }
+
+        private static void BuildTangentBasis(Vector3 normal, out Vector3 tangentA, out Vector3 tangentB)
+        {
+            Vector3 helper = MathF.Abs(normal.Y) > 0.95f ? Vector3.UnitX : Vector3.UnitY;
+            tangentA = Vector3.Normalize(Vector3.Cross(normal, helper));
+            tangentB = Vector3.Normalize(Vector3.Cross(normal, tangentA));
+        }
+
+        private float GetPawnSurfaceOffset()
+        {
+            return MathF.Max(WorldConstants.MinPawnSurfaceOffset, PlanetRadius * WorldConstants.PawnSurfaceOffsetFactor);
         }
         
         /// <summary>
@@ -451,13 +506,28 @@ namespace SpaceDNA.Core
         /// </summary>
         public Vector3 GetWorldPosition(Pawn pawn)
         {
-            Vector3 dir = pawn.Position;
-            if (dir.LengthSquared > 0.000001f)
-                dir = Vector3.Normalize(dir);
-            float height = GetHeightAtPosition(dir);
-            float outward = PlanetRadius * 0.22f + _displacementScale * 0.5f;
-            float surfaceRadius = PlanetRadius + height + outward;
-            return dir * surfaceRadius;
+            var sample = SampleSurface(pawn.Position);
+            float offset = GetPawnSurfaceOffset();
+            return sample.Position + sample.Normal * offset;
+        }
+
+        /// <summary>
+        /// Debug/runtime check: verifies that alive pawns are anchored near surface + offset.
+        /// </summary>
+        public int ValidateSurfaceAnchoring(float tolerance = 0.02f)
+        {
+            int invalid = 0;
+            float offset = GetPawnSurfaceOffset();
+            foreach (var pawn in _pawns)
+            {
+                if (!pawn.IsAlive) continue;
+                var sample = SampleSurface(pawn.Position);
+                float worldRadius = (GetWorldPosition(pawn)).Length;
+                float target = sample.Radius + offset;
+                if (MathF.Abs(worldRadius - target) > tolerance)
+                    invalid++;
+            }
+            return invalid;
         }
         
         /// <summary>
