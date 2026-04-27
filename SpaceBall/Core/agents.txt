@@ -1,0 +1,1 @@
+Ядро симуляции: SurfaceSampler, PlanetGenerator, WorldConstants, Pawn/PawnAgent, геномы/ДНК и правила среды.

@@ -1,0 +1,1 @@
+Папка приложения SpaceBall: игровой цикл OpenTK/ImGui, генерация планеты, transition heightmap и рендер пешек на поверхности.

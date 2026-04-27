@@ -86,6 +86,7 @@ public partial class Game : GameWindow
     private bool _planetDiagnosticsLogged;
     private bool _pawnSkipReasonLogged;
     private bool _pawnDrawModeLogged;
+    private float _pawnSurfaceAuditTimer;
 
     public Game(GameWindowSettings g, NativeWindowSettings n) : base(g, n) { }
 
@@ -329,7 +330,7 @@ public partial class Game : GameWindow
                 {
                     SaveHeightmapToDataPng(_currentHeightmap, "current.png");
                     SaveHeightmapToDataPng(_currentHeightmap, "future.png");
-                    _pawnAgent?.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+                    _pawnAgent?.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
                 }
             }
         }
@@ -898,7 +899,7 @@ void main(){
 
         if (_currentHeightmap != null)
         {
-            _pawnAgent.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+            _pawnAgent.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
         }
         float effT = WorldConstants.GetEffectiveTemperature(_config.Temperature, _config.GeologicActivity);
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
@@ -936,12 +937,23 @@ void main(){
         if (_pawnAgent == null || !_pawnsInitialized) return;
         if (_currentHeightmap != null)
         {
-            _pawnAgent.SetHeightmap(_currentHeightmap, EffectiveDisplacementScale());
+            _pawnAgent.SetSurfaceState(_currentHeightmap, _nextHeightmap, _blendFactor, EffectiveDisplacementScale());
         }
         float effT = WorldConstants.GetEffectiveTemperature(_config.Temperature, _config.GeologicActivity);
         float effA = WorldConstants.GetEffectiveAtmosphere(_config.Atmosphere, _config.GeologicActivity);
         _pawnAgent.SetPlanetParameters(_config.Radius, _config.Density, effT, effA, _config.GeologicActivity);
         _pawnAgent.Update(dt);
+
+        _pawnSurfaceAuditTimer += dt;
+        if (_pawnSurfaceAuditTimer >= 2f)
+        {
+            _pawnSurfaceAuditTimer = 0f;
+            int invalid = _pawnAgent.ValidateSurfaceAnchoring();
+            var dbg = _pawnAgent.GetSurfaceDebugInfo();
+            GameLog.Log($"[PawnsSurface] invalid={invalid}/{_pawnAgent.AliveCount} below={dbg.BelowSurfaceCount}/{dbg.AliveCount} " +
+                        $"worldR={dbg.AverageWorldRadius:F3} surfaceR={dbg.AverageSurfaceRadius:F3} delta={dbg.AverageVisualDelta:F4} " +
+                        $"h={dbg.AverageHeight:F4} disp={dbg.DisplacementScale:F4} blend={dbg.BlendFactor:F3}");
+        }
     }
 
     private void DrawAgents(Matrix4 model, Matrix4 view, Matrix4 projection)

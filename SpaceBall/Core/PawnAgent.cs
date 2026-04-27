@@ -11,6 +11,32 @@ namespace SpaceDNA.Core
     /// </summary>
     public class PawnAgent
     {
+        public readonly struct PawnSurfaceDebugInfo
+        {
+            public int AliveCount { get; }
+            public int BelowSurfaceCount { get; }
+            public float AverageWorldRadius { get; }
+            public float AverageSurfaceRadius { get; }
+            public float AverageVisualDelta { get; }
+            public float AverageHeight { get; }
+            public float DisplacementScale { get; }
+            public float BlendFactor { get; }
+
+            public PawnSurfaceDebugInfo(int aliveCount, int belowSurfaceCount, float averageWorldRadius,
+                float averageSurfaceRadius, float averageVisualDelta, float averageHeight,
+                float displacementScale, float blendFactor)
+            {
+                AliveCount = aliveCount;
+                BelowSurfaceCount = belowSurfaceCount;
+                AverageWorldRadius = averageWorldRadius;
+                AverageSurfaceRadius = averageSurfaceRadius;
+                AverageVisualDelta = averageVisualDelta;
+                AverageHeight = averageHeight;
+                DisplacementScale = displacementScale;
+                BlendFactor = blendFactor;
+            }
+        }
+
         // World parameters (from planet config)
         public float PlanetRadius { get; private set; }
         public float PlanetDensity { get; private set; }
@@ -23,9 +49,8 @@ namespace SpaceDNA.Core
         public float EffectiveSpeed { get; private set; }
         public float EnergyCostMultiplier { get; private set; }
         
-        // Heightmap data
-        private float[,]? _heightmap;
-        private int _heightmapSize;
+        // Heightmap/surface sampler data
+        private readonly SurfaceSampler _surfaceSampler = new SurfaceSampler();
         
         // Pawn population
         private List<Pawn> _pawns = new List<Pawn>();
@@ -83,6 +108,7 @@ namespace SpaceDNA.Core
             GravityFactor = WorldConstants.CalculateGravityFactor(radius, density);
             EnergyCostMultiplier = WorldConstants.GravityEnergyMultiplier(GravityFactor);
             EffectiveSpeed = WorldConstants.GravitySpeedMultiplier(GravityFactor);
+            _surfaceSampler.SetPlanet(radius, _surfaceSampler.DisplacementScale);
         }
         
         /// <summary>
@@ -90,12 +116,14 @@ namespace SpaceDNA.Core
         /// </summary>
         public void SetHeightmap(float[,] heightmap, float displacementScale)
         {
-            _heightmap = heightmap;
-            _heightmapSize = heightmap.GetLength(0);
-            _displacementScale = displacementScale;
+            SetSurfaceState(heightmap, null, blendFactor: 0f, displacementScale);
         }
-        
-        private float _displacementScale = 1f;
+
+        public void SetSurfaceState(float[,] currentHeightmap, float[,]? nextHeightmap, float blendFactor, float displacementScale)
+        {
+            _surfaceSampler.SetPlanet(PlanetRadius, displacementScale);
+            _surfaceSampler.SetHeightmaps(currentHeightmap, nextHeightmap, blendFactor);
+        }
         
         /// <summary>
         /// Initialize pawn population.
@@ -142,12 +170,12 @@ namespace SpaceDNA.Core
                     MathF.Sin(phi) * MathF.Sin(theta),
                     MathF.Cos(phi)
                 );
-                if (_heightmap == null) break;
+                if (!_surfaceSampler.HasData) break;
                 float h = GetHeightAtPosition(pos);
                 if (h >= 0f || genome.WaterAffinity >= waterTraverseThreshold) break;
             }
 
-            return new Pawn(pos, genome);
+            return new Pawn(pos, genome, random: _rnd);
         }
         
         /// <summary>
@@ -185,36 +213,29 @@ namespace SpaceDNA.Core
             {
                 if (!pawn.IsAlive) continue;
                 
-                // Высота рельефа из шума в текущей позиции (для движения и проверок)
-                float height = GetHeightAtPosition(pawn.Position);
-                float localTemp = CalculateLocalTemperature(height);
-
-                Vector3 prevPos = pawn.Position;
+                SurfaceSampler.SurfaceSample prevSample = SampleSurface(pawn.Position);
+                float localTemp = CalculateLocalTemperature(prevSample.Height);
 
                 // Update pawn physics (height = текущая высота рельефа под пешкой)
-                pawn.Update(deltaTime, height, localTemp, GravityFactor,
+                pawn.Update(deltaTime, prevSample.Height, localTemp, GravityFactor,
                     PlanetAtmosphere, PlanetGeologicActivity);
 
-                // Проверка по высоте шума: не уходить «под землю» (в воду без плавания), не взбираться на кручу без полёта
-                if (_heightmap != null)
-                {
-                    float newH = GetTerrainHeightAt(pawn.Position);
-                    bool revert = false;
-                    if (!CanPawnEnterTerrainAt(pawn, newH))
-                        revert = true;
-                    float heightChange = MathF.Abs(newH - height);
-                    const float maxSlopePerStep = 0.14f;
-                    if (!pawn.Genome.CanFly && heightChange > maxSlopePerStep)
-                        revert = true;
-                    if (revert)
-                        pawn.SetPosition(prevPos);
-                }
+                SurfaceSampler.SurfaceSample nextSample = SampleSurface(pawn.Position);
+                bool revert = false;
+                if (!CanPawnEnterTerrainAt(pawn, nextSample.Height))
+                    revert = true;
+                const float maxSurfaceSlope = 0.85f;
+                if (!pawn.Genome.CanFly && nextSample.Slope > maxSurfaceSlope)
+                    revert = true;
+
+                SurfaceSampler.SurfaceSample activeSample = revert ? prevSample : nextSample;
+                pawn.SetPosition(activeSample.Normal);
                 
                 // Check for food collision
                 CheckFoodCollision(pawn);
                 
                 // Passive foraging: water and grass (low/zero height) give energy
-                ApplyTerrainForaging(pawn, height, deltaTime);
+                ApplyTerrainForaging(pawn, activeSample.Height, deltaTime);
                 
                 // Track deaths
                 if (!pawn.IsAlive)
@@ -250,7 +271,15 @@ namespace SpaceDNA.Core
         /// </summary>
         public float GetTerrainHeightAt(Vector3 unitDirection)
         {
-            return GetHeightAtPosition(Vector3.Normalize(unitDirection));
+            return SampleSurface(unitDirection).Height;
+        }
+
+        public float GetSurfaceRadius(Vector3 direction) => SampleSurface(direction).Radius;
+        public Vector3 GetSurfacePoint(Vector3 direction) => SampleSurface(direction).Position;
+
+        public SurfaceSampler.SurfaceSample SampleSurface(Vector3 direction)
+        {
+            return _surfaceSampler.SampleSurface(direction);
         }
         
         /// <summary>
@@ -269,23 +298,15 @@ namespace SpaceDNA.Core
         /// </summary>
         private float GetHeightAtPosition(Vector3 position)
         {
-            if (_heightmap == null) return 0f;
+            return _surfaceSampler.SampleHeightWorld(position);
+        }
 
-            // Pawn.Position может слегка "поплыть" и перестать быть единичным вектором.
-            // Нормализуем, иначе мир-позиция будет внутри планеты.
-            if (position.LengthSquared > 0.000001f)
-                position = Vector3.Normalize(position);
-            
-            // Convert 3D position to UV (u,v как у сферы; текстура: y=0=юг, y=size-1=север)
-            float u = 0.5f + MathF.Atan2(position.Z, position.X) / (2 * MathF.PI);
-            float v = 0.5f - MathF.Asin(Math.Clamp(position.Y, -1f, 1f)) / MathF.PI;
-            int x = (int)(u * (_heightmapSize - 1));
-            int y = (int)((1.0 - v) * (_heightmapSize - 1));
-            
-            x = Math.Clamp(x, 0, _heightmapSize - 1);
-            y = Math.Clamp(y, 0, _heightmapSize - 1);
-            
-            return _heightmap[x, y] * _displacementScale;
+        private float GetPawnSurfaceOffset(Pawn pawn)
+        {
+            float baseOffset = MathF.Max(WorldConstants.MinPawnSurfaceOffset, PlanetRadius * WorldConstants.PawnSurfaceOffsetFactor);
+            float visualOffset = WorldConstants.PawnVisualSurfaceOffset * PlanetRadius;
+            float modelOffset = WorldConstants.PawnModelBaseOffset * pawn.Genome.Size;
+            return baseOffset + visualOffset + modelOffset;
         }
         
         /// <summary>
@@ -335,7 +356,7 @@ namespace SpaceDNA.Core
         private void ApplyTerrainForaging(Pawn pawn, float heightWorld, float deltaTime)
         {
             if (!pawn.IsAlive || deltaTime <= 0f) return;
-            float normH = _displacementScale > 0.0001f ? heightWorld / _displacementScale : 0f;
+            float normH = _surfaceSampler.DisplacementScale > 0.0001f ? heightWorld / _surfaceSampler.DisplacementScale : 0f;
             float forage = 0f;
             if (normH < 0f && pawn.Genome.WaterAffinity >= 0.55f)
                 forage = WorldConstants.WaterForageEnergyRate * deltaTime;
@@ -451,13 +472,73 @@ namespace SpaceDNA.Core
         /// </summary>
         public Vector3 GetWorldPosition(Pawn pawn)
         {
-            Vector3 dir = pawn.Position;
-            if (dir.LengthSquared > 0.000001f)
-                dir = Vector3.Normalize(dir);
-            float height = GetHeightAtPosition(dir);
-            float outward = PlanetRadius * 0.22f + _displacementScale * 0.5f;
-            float surfaceRadius = PlanetRadius + height + outward;
-            return dir * surfaceRadius;
+            var sample = SampleSurface(pawn.Position);
+            float offset = GetPawnSurfaceOffset(pawn);
+            return sample.Position + sample.Normal * offset;
+        }
+
+        /// <summary>
+        /// Debug/runtime check: verifies that alive pawns are anchored near surface + offset.
+        /// </summary>
+        public int ValidateSurfaceAnchoring(float tolerance = 0.02f)
+        {
+            int invalid = 0;
+            foreach (var pawn in _pawns)
+            {
+                if (!pawn.IsAlive) continue;
+                var sample = SampleSurface(pawn.Position);
+                float worldRadius = (GetWorldPosition(pawn)).Length;
+                float offset = GetPawnSurfaceOffset(pawn);
+                float target = sample.Radius + offset;
+                if (MathF.Abs(worldRadius - target) > tolerance)
+                    invalid++;
+            }
+            return invalid;
+        }
+
+        public PawnSurfaceDebugInfo GetSurfaceDebugInfo()
+        {
+            int alive = 0;
+            int below = 0;
+            float sumWorldRadius = 0f;
+            float sumSurfaceRadius = 0f;
+            float sumDelta = 0f;
+            float sumHeight = 0f;
+
+            foreach (var pawn in _pawns)
+            {
+                if (!pawn.IsAlive) continue;
+                alive++;
+                var sample = SampleSurface(pawn.Position);
+                float worldRadius = GetWorldPosition(pawn).Length;
+                float offset = GetPawnSurfaceOffset(pawn);
+                float surfaceWithOffset = sample.Radius + offset;
+                float delta = worldRadius - surfaceWithOffset;
+
+                if (delta < 0f) below++;
+                sumWorldRadius += worldRadius;
+                sumSurfaceRadius += sample.Radius;
+                sumDelta += delta;
+                sumHeight += sample.Height;
+            }
+
+            if (alive == 0)
+            {
+                return new PawnSurfaceDebugInfo(
+                    aliveCount: 0, belowSurfaceCount: 0, averageWorldRadius: 0f, averageSurfaceRadius: 0f,
+                    averageVisualDelta: 0f, averageHeight: 0f,
+                    displacementScale: _surfaceSampler.DisplacementScale, blendFactor: _surfaceSampler.BlendFactor);
+            }
+
+            return new PawnSurfaceDebugInfo(
+                aliveCount: alive,
+                belowSurfaceCount: below,
+                averageWorldRadius: sumWorldRadius / alive,
+                averageSurfaceRadius: sumSurfaceRadius / alive,
+                averageVisualDelta: sumDelta / alive,
+                averageHeight: sumHeight / alive,
+                displacementScale: _surfaceSampler.DisplacementScale,
+                blendFactor: _surfaceSampler.BlendFactor);
         }
         
         /// <summary>
