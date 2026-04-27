@@ -309,14 +309,14 @@ namespace SpaceDNA.Core
         private float GetPawnSurfaceOffset(Pawn pawn)
         {
             float baseOffset = MathF.Max(WorldConstants.MinPawnSurfaceOffset, PlanetRadius * WorldConstants.PawnSurfaceOffsetFactor);
-            float visualOffset = WorldConstants.PawnVisualSurfaceOffset * PlanetRadius;
-            float modelOffset = WorldConstants.PawnModelBaseOffset * pawn.Genome.Size;
+            float visualOffset = PawnVisualSurfaceOffsetFactor * PlanetRadius;
+            float modelOffset = PawnModelBaseOffset * pawn.Genome.Size;
             return baseOffset + visualOffset + modelOffset;
         }
 
         private float EstimateSlope(Vector3 normal, float baseHeight)
         {
-            if (_heightmap == null) return 0f;
+            if (!_surfaceSampler.HasData) return 0f;
 
             BuildTangentBasis(normal, out var tangentA, out var tangentB);
             const float eps = 0.015f;
