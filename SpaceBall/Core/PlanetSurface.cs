@@ -4,46 +4,64 @@ using OpenTK.Mathematics;
 namespace SpaceDNA.Core
 {
     /// <summary>
-    /// Единый источник геометрии поверхности планеты.
-    /// Содержит радиус, heightmap и формулы выборки для CPU-привязки пешек.
+    /// Единая координатная модель планеты: центр в (0,0,0), направление всегда нормализовано.
     /// </summary>
     public sealed class PlanetSurface
     {
-        private float[,]? _heightmapCurrent;
-        private float[,]? _heightmapNext;
-        private int _width;
-        private int _height;
+        private float[,] _heightmap = new float[1, 1];
 
         public float Radius { get; private set; } = WorldConstants.EarthRadius;
-        public float DisplacementScale { get; private set; } = 1f;
-        public float BlendFactor { get; private set; }
-        public bool HasHeightmap => _heightmapCurrent != null;
+        public float DisplacementScale { get; private set; } = 0.3f;
+        public float[,] Heightmap => _heightmap;
+
+        public float MinHeight01 { get; private set; }
+        public float MaxHeight01 { get; private set; }
+        public float MinSurfaceRadius { get; private set; }
+        public float MaxSurfaceRadius { get; private set; }
 
         public void SetPlanet(float radius, float displacementScale)
         {
-            Radius = radius;
-            DisplacementScale = displacementScale;
+            Radius = Math.Max(0.01f, radius);
+            DisplacementScale = Math.Max(0f, displacementScale);
+            RecalculateStats();
         }
 
-        public void SetHeightmaps(float[,] currentHeightmap, float[,]? nextHeightmap, float blendFactor)
+        public void Generate(int seed, int size)
         {
-            _heightmapCurrent = currentHeightmap;
-            _heightmapNext = nextHeightmap;
-            _width = currentHeightmap.GetLength(0);
-            _height = currentHeightmap.GetLength(1);
-            BlendFactor = Math.Clamp(blendFactor, 0f, 1f);
+            int safeSize = Math.Clamp(size, 32, 1024);
+            var genome = new Genome
+            {
+                Seed = seed,
+                GeologicActivity = 1f,
+                NoiseOctaves = 5,
+                NoiseFrequency = 0.9f,
+                Temperature = 0.5f,
+                Atmosphere = 0.5f,
+                Density = 1f
+            };
+
+            _heightmap = PlanetGenerator.GenerateHeightmap(genome, safeSize);
+            RecalculateStats();
         }
 
-        public float GetHeight(Vector3 direction)
+        public float GetHeight01(Vector3 direction)
         {
-            if (_heightmapCurrent == null)
-                return 0f;
+            if (_heightmap.Length == 0)
+                return 0.5f;
 
             Vector3 normal = GetSurfaceNormal(direction);
-            float h1 = SampleHeightNormalized(_heightmapCurrent, normal);
-            float h2 = _heightmapNext != null ? SampleHeightNormalized(_heightmapNext, normal) : h1;
-            float h = h1 + (h2 - h1) * BlendFactor;
-            return h * DisplacementScale;
+            float signed = SampleHeightSigned(normal);
+            return Math.Clamp(0.5f + signed * 0.5f, 0f, 1f);
+        }
+
+        public float GetHeightWorld(Vector3 direction)
+        {
+            return (GetHeight01(direction) * 2f - 1f) * DisplacementScale;
+        }
+
+        public float GetSurfaceRadius(Vector3 direction)
+        {
+            return Radius + GetHeightWorld(direction);
         }
 
         public Vector3 GetSurfacePoint(Vector3 direction)
@@ -57,71 +75,77 @@ namespace SpaceDNA.Core
             return direction.LengthSquared > 0.000001f ? Vector3.Normalize(direction) : Vector3.UnitY;
         }
 
-        public float GetSurfaceRadius(Vector3 direction)
+        public float GetAtmosphereRadius() => Radius * 1.08f;
+        public float GetCloudRadius() => Radius * 1.12f;
+
+        public Vector3 GetPointAtRadius(Vector3 direction, float worldRadius)
         {
-            return Radius + GetHeight(direction);
+            return GetSurfaceNormal(direction) * worldRadius;
         }
 
-        private float SampleHeightNormalized(float[,] map, Vector3 normal)
+        private float SampleHeightSigned(Vector3 normal)
         {
-            const float twoPi = MathF.PI * 2f;
-            float lon = MathF.Atan2(normal.Z, normal.X);
-            if (lon < 0f) lon += twoPi;
-            float uvX = lon / twoPi;
-            float uvY = 0.5f + MathF.Asin(Math.Clamp(normal.Y, -1f, 1f)) / MathF.PI;
-            return SampleTextureLinearUnpacked(map, uvX, uvY);
-        }
-
-        private float SampleTextureLinearUnpacked(float[,] map, float uvX, float uvY)
-        {
-            if (_width <= 0 || _height <= 0)
+            int width = _heightmap.GetLength(0);
+            int height = _heightmap.GetLength(1);
+            if (width <= 1 || height <= 1)
                 return 0f;
 
-            float x = uvX * _width - 0.5f;
-            float y = uvY * _height - 0.5f;
+            float lon = MathF.Atan2(normal.Z, normal.X);
+            if (lon < 0f)
+                lon += MathF.PI * 2f;
+
+            float u = lon / (MathF.PI * 2f);
+            float v = 0.5f + MathF.Asin(Math.Clamp(normal.Y, -1f, 1f)) / MathF.PI;
+
+            float x = u * (width - 1);
+            float y = v * (height - 1);
 
             int x0 = (int)MathF.Floor(x);
             int y0 = (int)MathF.Floor(y);
-            int x1 = x0 + 1;
-            int y1 = y0 + 1;
+            int x1 = (x0 + 1) % width;
+            int y1 = Math.Min(y0 + 1, height - 1);
 
             float tx = x - x0;
             float ty = y - y0;
 
-            int sx0 = WrapRepeat(x0, _width);
-            int sx1 = WrapRepeat(x1, _width);
-            int sy0 = ClampEdge(y0, _height);
-            int sy1 = ClampEdge(y1, _height);
+            float h00 = _heightmap[x0, y0];
+            float h10 = _heightmap[x1, y0];
+            float h01 = _heightmap[x0, y1];
+            float h11 = _heightmap[x1, y1];
 
-            float c00 = UnpackHeight(map[sx0, sy0]);
-            float c10 = UnpackHeight(map[sx1, sy0]);
-            float c01 = UnpackHeight(map[sx0, sy1]);
-            float c11 = UnpackHeight(map[sx1, sy1]);
-
-            float cx0 = c00 + (c10 - c00) * tx;
-            float cx1 = c01 + (c11 - c01) * tx;
-            return cx0 + (cx1 - cx0) * ty;
+            float hx0 = MathHelper.Lerp(h00, h10, tx);
+            float hx1 = MathHelper.Lerp(h01, h11, tx);
+            return MathHelper.Lerp(hx0, hx1, ty);
         }
 
-        private static int WrapRepeat(int value, int size)
+        private void RecalculateStats()
         {
-            int result = value % size;
-            return result < 0 ? result + size : result;
-        }
+            MinHeight01 = 1f;
+            MaxHeight01 = 0f;
 
-        private static int ClampEdge(int value, int size)
-        {
-            if (value < 0) return 0;
-            if (value >= size) return size - 1;
-            return value;
-        }
+            int width = _heightmap.GetLength(0);
+            int height = _heightmap.GetLength(1);
+            if (width == 0 || height == 0)
+            {
+                MinHeight01 = 0.5f;
+                MaxHeight01 = 0.5f;
+                MinSurfaceRadius = Radius;
+                MaxSurfaceRadius = Radius;
+                return;
+            }
 
-        private static float UnpackHeight(float rawHeight)
-        {
-            float clamped = Math.Clamp(rawHeight, -1f, 1f);
-            byte encoded = (byte)((clamped * 0.5f + 0.5f) * 255f);
-            float texelR = encoded / 255f;
-            return texelR * 2f - 1f;
+            for (int x = 0; x < width; x++)
+            {
+                for (int y = 0; y < height; y++)
+                {
+                    float h01 = Math.Clamp(0.5f + _heightmap[x, y] * 0.5f, 0f, 1f);
+                    MinHeight01 = MathF.Min(MinHeight01, h01);
+                    MaxHeight01 = MathF.Max(MaxHeight01, h01);
+                }
+            }
+
+            MinSurfaceRadius = Radius + (MinHeight01 * 2f - 1f) * DisplacementScale;
+            MaxSurfaceRadius = Radius + (MaxHeight01 * 2f - 1f) * DisplacementScale;
         }
     }
 }
