@@ -1,2 +1,2 @@
-Ядро симуляции: PlanetSurface + Pawn/PawnAgent как основной путь существ.
-Legacy-классы Agent/AgentManager сохранены только как неактивные, не используются Game.
+Ядро симуляции: PlanetSurface как единый контракт координат и высот.
+Активные сущности: Pawn и PawnAgent; legacy Agent/AgentManager удалены.
